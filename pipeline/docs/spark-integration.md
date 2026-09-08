@@ -68,8 +68,20 @@ MinIO reader 를 만들 수 있어야 한다.** 크롤러 코드를 열어야 �
 | 언제 | 기사 하나가 MinIO 에 저장된 뒤 | 소스 하나의 실행이 끝날 때마다 (0건·실패에도) |
 | `event_id` | `{source_id}-{article_id}` | `{source_id}-{run_id}` |
 | `object_key` | article.json 키 | **`null`** |
-| `run_id` | **`null`** | `yyyyMMddTHHmmss` (KST) |
+| `run_id` | `yyyyMMddTHHmmss` (KST). **발급한 실행** | `yyyyMMddTHHmmss` (KST) |
 | 하루 몇 건 | 700 건 안팎 | 소스 수 × 실행 수 |
+
+### `run_id` 는 **발급한** 실행이다
+
+두 모양 다 값이 있고, 그 값은 **그 이벤트를 내보낸 실행**이다. 긁어 온 실행이 아니다.
+지난 실행에서 저장만 되고 못 나간 기사를 이번에 내보내면 이번 실행의 값이 실린다 —
+그 기사를 실제로 내보낸 회차는 하나뿐이라 이월분에서도 거짓이 되지 않는다. 기사를
+받은 시각은 `collected_at` 이 따로 든다.
+
+기사 이벤트에도 채우는 이유는 소비 측이 `curated` 를
+`domain/published_date/source/run_id` 로 파티션하고 재처리 단위를 그 축으로 자르기
+때문이다. 기사 이벤트의 중복 판정은 `event_id`(`{source_id}-{article_id}`) 로 하므로
+`run_id` 는 거기에 쓰이지 않는다 (S15P21A102-205 결정, 2026-09-08).
 
 ### ⚠️ 분기 기준은 `object_key` 의 null 여부다
 
@@ -99,7 +111,7 @@ is_article_event = event["object_key"] is not None
 | `domain` | string | `fashion` \| `dev` (§11 참고) | 같음 |
 | `source_id` | string | 소스 키 (`vogue` 등) | 같음 |
 | `article_id` | string \| null | 소스의 기사 식별자 | `null` |
-| `run_id` | string \| null | **`null`** | `yyyyMMddTHHmmss` (KST) |
+| `run_id` | string | `yyyyMMddTHHmmss` (KST). **그 기사를 발급한 실행** | `yyyyMMddTHHmmss` (KST) |
 | `url` | string \| null | 기사 정식 URL | `null` |
 | `title` | string \| null | 기사 제목 | `null` |
 | `published_at` | string \| null | ISO-8601, **소스가 준 오프셋 그대로** | `null` |
@@ -350,7 +362,7 @@ cd pipeline
 | 층 | 무엇을 보나 |
 |---|---|
 | Kafka | message key == `source_id` · 소스별로 한 파티션에 모이는지 · **요약 이벤트가 그 소스의 기사들 뒤에 오는지** (§2 의 순서 보장) |
-| 봉투 | 공통 필드 · `schema_version` · 기사/요약 분기 · 기사의 `run_id` 가 `null` · `record_count=1` · 출처 명시 3종 · 요약의 `failure_reason` |
+| 봉투 | 공통 필드 · `schema_version` · 기사/요약 분기 · 기사의 `run_id` 가 비어 있지 않은지 · `record_count=1` · 출처 명시 3종 · 요약의 `failure_reason` |
 | MinIO | `object_key` 와 `raw_object_key` 읽기 · `checksum` 대조 · 봉투와 `article.json` 의 값 일치 · raw 가 없으면 `members_only` 인지 |
 | 권한 | **Spark 키 write 거부** |
 
@@ -410,7 +422,6 @@ fixture 를 다시 만들어야 하고, 그러면 fixture diff 가 MR 에 남는
 | `02` 의 내용 | 실제 |
 |---|---|
 | `EVENT_SCHEMA` | `raw_object_key` · `article_id` · `url` · `title` · `published_at` · `members_only` 6 개가 없다. `from_json` 이 버린다 |
-| `run_id` 가 `nullable=False` | 기사 이벤트는 항상 `null` 이다 |
 | §2 표: `success` + `record_count>0` + `object_key=null` → 계약 위반 DLQ | 실행 요약 이벤트가 정확히 그 모양이다 (§3) |
 | §3 `record_count` 를 파싱된 줄 수와 대조 | 객체가 jsonl 이 아니라 단일 JSON 객체다 |
 | §6 manifest 모드가 `metadata.json` 을 훑는다 | `metadata.json` 이 없다. `article.json` 이 완료 마커다 (§5) |
