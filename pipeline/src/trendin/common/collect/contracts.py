@@ -65,7 +65,7 @@ class Failure:
     """기사 한 건의 실패. 나머지 건은 그대로 간다(불변식 9 의 실패 단위는 기사다)."""
 
     source: str
-    stage: str  # "discover" | "materialize"
+    stage: str  # "discover" | "materialize" | "store"
     ref: str  # guid 원문이나 article_id
     reason: str
 

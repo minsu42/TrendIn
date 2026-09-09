@@ -308,15 +308,28 @@ def test_매핑이_한_건이면_dict_하나로_온다():
     assert outcomes_from_xcom(None) == []
 
 
-def test_XCom_에_예외_문자열을_싣지_않는다():
-    """규약 4 — XCom 엔 ID·건수만. 예외 문자열은 길이도 내용도 예측이 안 된다."""
+def test_수집_결과는_단계별_실패와_저장_숫자를_XCom_왕복에도_보존한다(monkeypatch):
+    import json
+
+    ticks = iter([10.0, 31.43])
+    monkeypatch.setattr("trendin.common.collect.flow.time.monotonic", lambda: next(ticks))
     outcome = collect_source(
-        FakeAdapter(["1", "2"], broken=["2"]), ledger=InMemoryLedger(), store=InMemoryObjectStore()
+        FakeAdapter(["1", "2", "3"], broken=["2"], members=["1", "3"]),
+        ledger=InMemoryLedger(),
+        store=InMemoryObjectStore(swallow={"fashion/vogue/rss/2026/09/03/3/article.json"}),
     )
-    payload = outcome.to_dict()
-    assert payload["failed"] == 2
-    assert all(isinstance(v, (str, int, bool)) for v in payload.values())
-    assert "발행일이 없다" not in repr(payload)
+    assert outcome.discovered == 3
+    assert outcome.stored == outcome.members_only_stored == 1
+    assert outcome.failed == 3
+    assert outcome.failed_by_stage == {"discover": 1, "materialize": 1, "store": 1}
+    assert outcome.duration_ms == 21430
+    payload = json.loads(json.dumps(outcome.to_dict()))
+    assert payload["failures"] == [
+        {"stage": "discover", "article_id": "bad", "reason": "깨진 item"},
+        {"stage": "materialize", "article_id": "2", "reason": "발행일이 없다"},
+        {"stage": "store", "article_id": "3", "reason": "저장한 객체가 stat 에 안 잡힌다"},
+    ]
+    assert SourceOutcome.from_dict(payload) == outcome
 
 
 # --- 객체 메타데이터와 키 규칙 (S15P21A102-158) -----------------------------
@@ -521,3 +534,30 @@ def test_다_비운_뒤_재시도해도_건수가_같다():
 
     assert first == retry == {"vogue": 250}
     assert len(publisher.sent) == 250, "재시도가 이미 나간 것을 다시 내면 안 된다"
+
+
+def test_실패_표본은_10건_사유는_200자로_제한하되_전체_실패를_센다():
+    class BrokenFeed(FakeAdapter):
+        def discover(self, page=None):
+            return DiscoverResult(candidates=[], failures=[
+                Failure(source="vogue", stage="discover", ref=str(i), reason="가" * 201)
+                for i in range(12)
+            ])
+
+    outcome = collect_source(BrokenFeed([]), ledger=InMemoryLedger(), store=InMemoryObjectStore())
+    assert outcome.failed == 12
+    assert outcome.failed_by_stage == {"discover": 12, "materialize": 0, "store": 0}
+    assert [f.article_id for f in outcome.failures] == [str(i) for i in range(10)]
+    assert all(f.reason == "가" * 200 for f in outcome.failures)
+
+
+def test_304는_발견_0건과_구분하고_실패_없이_빈_결과를_남긴다():
+    class Unchanged(FakeAdapter):
+        def discover(self, page=None):
+            return DiscoverResult(candidates=[], not_modified=True)
+
+    outcome = collect_source(Unchanged([]), ledger=InMemoryLedger(), store=InMemoryObjectStore())
+    assert outcome.not_modified is True
+    assert outcome.discovered == outcome.stored == outcome.skipped == outcome.failed == 0
+    assert outcome.failed_by_stage == {"discover": 0, "materialize": 0, "store": 0}
+    assert outcome.failures == ()

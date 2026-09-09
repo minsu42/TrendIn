@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, Sequence
 
@@ -51,35 +52,52 @@ NO_RETRY = (BlockedUserAgent, RobotsDisallowed, UrlNotAllowed, HostBlocked)
 TASK_FAILED_REASON = "태스크가 실패했다 (로그 참조)"
 
 
+FAILURE_SAMPLE_LIMIT = 10
+FAILURE_REASON_MAX = 200
+
+
+@dataclass(frozen=True, slots=True)
+class FailureBrief:
+    """요약에 싣는 실패 표본. 사유는 200자까지만 보존한다."""
+
+    stage: str  # "discover" | "materialize" | "store"
+    article_id: str
+    reason: str
+
+
 @dataclass(frozen=True, slots=True)
 class SourceOutcome:
     """소스 하나가 이번 실행에서 한 일. 요약 이벤트(#6)의 재료다."""
 
     source: str
     domain: str
+    discovered: int = 0
     stored: int = 0
     skipped: int = 0  # 장부에 이미 있어 받지 않은 후보 (불변식 12)
     not_modified: bool = False  # 조건부 요청이 304 — "새 글 0건"과 다르다
-    failed: int = 0  # 기사 단위 실패 건수. 이유는 로그에 남는다
+    failed: int = 0
+    failed_by_stage: dict[str, int] = field(
+        default_factory=lambda: {"discover": 0, "materialize": 0, "store": 0}
+    )
+    failures: tuple[FailureBrief, ...] = ()
+    duration_ms: int = 0
+    members_only_stored: int = 0
 
     def to_dict(self) -> dict:
         """XCom 으로 넘길 수 있는 모양.
 
-        규약 4 대로 ID·건수만이다. 실패 **이유**는 여기 싣지 않는다 — 예외 문자열은 길이도
-        내용도 예측이 안 돼서 XCom 에 들어갈 물건이 아니고, 건별 경고는 이미 로그에 있다.
+        예외 문자열은 길이를 예측할 수 없어 원래 제외했다. 표본 10건·사유 200자로
+        상한을 두어 실패 이유도 전달한다. 본문은 여전히 싣지 않는다(규약 4).
         """
-        return {
-            "source": self.source,
-            "domain": self.domain,
-            "stored": self.stored,
-            "skipped": self.skipped,
-            "not_modified": self.not_modified,
-            "failed": self.failed,
-        }
+        data = asdict(self)
+        data["failures"] = [asdict(failure) for failure in self.failures]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "SourceOutcome":
-        return cls(**data)
+        values = data.copy()
+        values["failures"] = tuple(FailureBrief(**failure) for failure in data.get("failures", []))
+        return cls(**values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,14 +169,17 @@ def store_candidates(
     *,
     ledger: Ledger,
     store: ObjectStore,
-) -> tuple[int, list[Failure]]:
-    """후보를 취득·정규화해 저장하고 장부에 적는다. 저장한 건수와 실패 목록을 돌려준다.
+) -> tuple[int, int, list[Failure]]:
+    """후보를 취득·정규화해 저장하고 장부에 적는다.
+
+    저장 건수·회원 전용 저장 건수·실패 목록을 돌려준다.
 
     주기 실행과 백필이 같은 루프를 쓴다. 백필이 제 루프를 따로 두면 저장 확인·장부 기록
     순서가 두 벌로 갈리고, 한쪽만 고쳐지는 날이 온다.
     """
     source = adapter.source
     stored = 0
+    members_only_stored = 0
     failures: list[Failure] = []
 
     for candidate in candidates:
@@ -180,6 +201,7 @@ def store_candidates(
 
         if store_article(article, raw, store=store, ledger=ledger):
             stored += 1
+            members_only_stored += int(bool(article.members_only))
         else:
             logger.warning("%s: 저장 확인 실패 %s", source.key, article.article_id)
             failures.append(
@@ -190,7 +212,7 @@ def store_candidates(
                     reason="저장한 객체가 stat 에 안 잡힌다",
                 )
             )
-    return stored, failures
+    return stored, members_only_stored, failures
 
 
 def collect_source(adapter: SourceAdapter, *, ledger: Ledger, store: ObjectStore) -> SourceOutcome:
@@ -199,23 +221,39 @@ def collect_source(adapter: SourceAdapter, *, ledger: Ledger, store: ObjectStore
     발견 자체가 실패하면 예외가 그대로 올라간다 — 그 소스는 이번 실행에서 할 일이 없고,
     재시도할지 말지는 예외 종류가 정한다(`NO_RETRY`).
     """
+    started = time.monotonic()
     source = adapter.source
     result = adapter.discover()
 
     new_ids = ledger.filter_new(source.key, [c.article_id for c in result.candidates])
     fresh = [c for c in result.candidates if c.article_id in new_ids]
 
-    stored, failures = store_candidates(adapter, fresh, ledger=ledger, store=store)
+    stored, members_only_stored, failures = store_candidates(
+        adapter, fresh, ledger=ledger, store=store
+    )
     for failure in result.failures:
         logger.warning("%s: 발견 실패 %s — %s", source.key, failure.ref, failure.reason)
+
+    all_failures = [*result.failures, *failures]
+    failed_by_stage = {"discover": 0, "materialize": 0, "store": 0}
+    for failure in all_failures:
+        failed_by_stage[failure.stage] += 1
 
     return SourceOutcome(
         source=source.key,
         domain=source.domain,
+        discovered=len(result.candidates),
         stored=stored,
         skipped=len(result.candidates) - len(fresh),
         not_modified=result.not_modified,
-        failed=len(failures) + len(result.failures),
+        failed=len(all_failures),
+        failed_by_stage=failed_by_stage,
+        failures=tuple(
+            FailureBrief(f.stage, f.ref, f.reason[:FAILURE_REASON_MAX])
+            for f in all_failures[:FAILURE_SAMPLE_LIMIT]
+        ),
+        duration_ms=int((time.monotonic() - started) * 1000),
+        members_only_stored=members_only_stored,
     )
 
 
