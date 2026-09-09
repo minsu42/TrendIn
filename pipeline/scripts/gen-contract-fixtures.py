@@ -27,9 +27,9 @@ from pathlib import Path
 
 from trendin.common.collect.article import Article
 from trendin.common.collect.events import article_event, run_summary_event
-from trendin.common.collect.flow import article_bytes
+from trendin.common.collect.flow import FailureBrief, SourceOutcome, article_bytes
 from trendin.common.collect.keys import article_key, raw_key
-from trendin.common.collect.ledger import PendingArticle
+from trendin.common.collect.ledger import EmittedStats, PendingArticle
 
 KST = timezone(timedelta(hours=9), "KST")
 BUCKET = "raw-data"
@@ -48,7 +48,7 @@ COLLECTED_AT = datetime(2026, 9, 3, 2, 10, tzinfo=timezone.utc)
 
 RUN_ID = "20260903T100000"
 LOGICAL_DATE = datetime(2026, 9, 3, 10, 0, tzinfo=KST)
-SUMMARY_RECORD_COUNT = 12
+SUMMARY_EMITTED = 12
 FAILED_SOURCE = "wkorea"
 FAILURE_REASON = "목록 페이지가 3회 연속 타임아웃"
 
@@ -128,8 +128,16 @@ def build() -> tuple[dict[str, dict], dict[str, bytes]]:
             run_id=RUN_ID,
             logical_date=LOGICAL_DATE,
             status="success",
-            record_count=SUMMARY_RECORD_COUNT,
-            bucket=BUCKET,
+            outcome=SourceOutcome(
+                source=SOURCE, domain=DOMAIN, discovered=10, stored=1, skipped=7, failed=2,
+                failed_by_stage={"discover": 0, "materialize": 2, "store": 0},
+                failures=(
+                    FailureBrief("materialize", "856053", "HTTPError 404"),
+                    FailureBrief("materialize", "856101", "본문을 못 찾았다"),
+                ),
+                duration_ms=21430,
+            ),
+            emitted=EmittedStats(SUMMARY_EMITTED, COLLECTED_AT - timedelta(days=2)),
         ),
         "run-summary-failed.json": run_summary_event(
             source=FAILED_SOURCE,
@@ -137,8 +145,8 @@ def build() -> tuple[dict[str, dict], dict[str, bytes]]:
             run_id=RUN_ID,
             logical_date=LOGICAL_DATE,
             status="failed",
-            record_count=0,
-            bucket=BUCKET,
+            outcome=None,
+            emitted=EmittedStats(0, None),
             failure_reason=FAILURE_REASON,
         ),
     }

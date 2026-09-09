@@ -67,7 +67,8 @@ def test_기사_이벤트_fixture_가_봉투_출력과_같다(article_evt):
     접두어, `collected_at` 의 KST 변환, `record_count`·`format` 같은 상수다.
     """
     rebuilt = article_event(
-        _pending_from(article_evt), bucket=article_evt["bucket"], run_id=article_evt["run_id"]
+        _pending_from(article_evt),
+        bucket=article_evt["bucket"], run_id=article_evt["emitted_run_id"]
     )
     assert rebuilt == article_evt
 
@@ -157,41 +158,47 @@ def test_article_json_이_그_자체로_유효한_JSON_이다(article_evt):
         assert doc[field]
 
 
-@pytest.mark.parametrize(
-    "name,status,record_count,reason",
-    [
-        ("run-summary-success.json", "success", 12, None),
-        ("run-summary-failed.json", "failed", 0, "목록 페이지가 3회 연속 타임아웃"),
-    ],
-)
-def test_요약_이벤트_fixture_가_봉투_출력과_같다(name, status, record_count, reason):
+@pytest.mark.parametrize("name", ["run-summary-success.json", "run-summary-failed.json"])
+def test_요약_이벤트_fixture_가_봉투_출력과_같다(name):
+    from datetime import datetime
+
+    from trendin.common.collect.flow import SourceOutcome
+    from trendin.common.collect.ledger import EmittedStats
+
     evt = load(name)
+    fields = ("discovered", "stored", "skipped", "not_modified", "failed", "failed_by_stage",
+              "failures", "duration_ms", "members_only_stored")
+    outcome = None
+    if evt["status"] == "success":
+        outcome = SourceOutcome.from_dict({
+            "source": evt["source_id"], "domain": evt["domain"],
+            **{key: evt[key] for key in fields},
+        })
+    else:
+        assert all(evt[key] is None for key in fields)
+    oldest = evt["emitted_oldest_collected_at"]
     rebuilt = run_summary_event(
-        source=evt["source_id"],
-        domain=evt["domain"],
-        run_id=evt["run_id"],
-        logical_date=__import__("datetime").datetime.fromisoformat(evt["collected_at"]),
-        status=status,
-        record_count=record_count,
-        bucket=evt["bucket"],
-        failure_reason=reason,
+        source=evt["source_id"], domain=evt["domain"], run_id=evt["run_id"],
+        logical_date=datetime.fromisoformat(evt["run_started_at"]), status=evt["status"],
+        outcome=outcome,
+        emitted=EmittedStats(evt["emitted"], datetime.fromisoformat(oldest) if oldest else None),
+        failure_reason=evt["failure_reason"],
     )
     assert rebuilt == evt
 
 
-def test_요약_이벤트는_object_key_가_null_이고_기사수가_0_이_아닐_수_있다():
-    """소비 측이 `object_key=null` 을 계약 위반으로 읽으면 정상 실행마다 DLQ 가 쌓인다.
-
-    `record_count > 0` 인 fixture 를 일부러 둔 이유다 — 팀 계약 §5 는 배치 하나에 이벤트
-    하나를 전제하지만 우리는 기사 하나에 이벤트 하나를 내고(설계 문서 #12 확정 7), 요약
-    이벤트가 그 위에 하나 더 붙는다. 소비 측 분기 기준은 `object_key` 의 null 여부다.
-    """
+def test_요약_fixture는_수집보다_많은_이월_발급을_담는다():
     evt = load("run-summary-success.json")
-    assert evt["object_key"] is None
-    assert evt["record_count"] > 0
+    assert "object_key" not in evt and "record_count" not in evt
+    assert evt["stored"] == 1
+    assert evt["emitted"] == 12
+    assert evt["failed"] == 2
+    assert len(evt["failures"]) == 2
+    assert evt["emitted_oldest_collected_at"] == "2026-09-01T11:10:00+09:00"
 
 
-def test_기사_이벤트의_run_id_는_발급한_실행이다(article_evt):
-    """159 는 `null` 로 뒀고 204 가 발급 실행 값으로 바꿨다. 결정은 S15P21A102-205."""
-    assert article_evt["run_id"]
+def test_기사_이벤트의_emitted_run_id_는_발급한_실행이다(article_evt):
+    """S15P21A102-205: 수집 회차로 오해하지 않도록 발급 실행 이름을 명시한다."""
+    assert article_evt["emitted_run_id"] == "20260903T100000"
+    assert "run_id" not in article_evt
     assert article_evt["article_id"]

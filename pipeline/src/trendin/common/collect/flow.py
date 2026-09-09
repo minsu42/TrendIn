@@ -25,7 +25,7 @@ from trendin.common.collect.article import Article
 from trendin.common.collect.contracts import Candidate, Failure, SourceAdapter
 from trendin.common.collect.events import article_event, run_summary_event
 from trendin.common.collect.keys import ROUTE_EXT, article_key, raw_key
-from trendin.common.collect.ledger import Ledger
+from trendin.common.collect.ledger import EmittedStats, Ledger
 from trendin.common.collect.session import (
     BlockedUserAgent,
     HostBlocked,
@@ -108,6 +108,7 @@ class SourceStatus:
     domain: str
     status: str  # "success" | "failed"
     failure_reason: str | None = None
+    outcome: SourceOutcome | None = None
 
 
 def run_id_of(logical_date: datetime) -> str:
@@ -141,7 +142,7 @@ def source_statuses(
             )
         else:
             statuses.append(
-                SourceStatus(source=key, domain=outcome.domain, status="success")
+                SourceStatus(source=key, domain=outcome.domain, status="success", outcome=outcome)
             )
     return statuses
 
@@ -332,14 +333,14 @@ def publish_pending(
     run_id: str,
     now: datetime,
     batch: int = 500,
-) -> dict[str, int]:
+) -> dict[str, EmittedStats]:
     """그 도메인에서 아직 안 나간 행을 전부 낸다. 지난 실행의 미발급분이 여기 딸려 온다.
 
     순서는 발행 → 장부 기록이다. 뒤집으면 기록 뒤 발행 전에 죽었을 때 그 기사가 영영 안
     나간다. 이 순서면 중복이 날 수 있는데, 그건 소비 측이 `event_id` 로 거르기로 팀
     계약에 적혀 있다(at-least-once).
 
-    소스별 건수를 돌려주는 이유는 요약 이벤트의 `record_count` 가 그 값이라서다. 그 값을
+    소스별 발급 건수와 가장 오래된 수집 시각이 요약의 발급 통계다. 그 값을
     **장부에 적힌 발급 실행**으로 세는 데는 이유가 둘 있다.
 
     이번 시도가 보낸 것만 세면 재시도에서 뒤집힌다 — 발급까지 마치고 요약 중간에 죽으면
@@ -348,7 +349,7 @@ def publish_pending(
     실행 구간으로 세면 겹칠 때 부푼다 — 실행 둘이 가까우면 앞 실행이 낸 것까지 센다.
 
     **밀린 것을 다 비운다.** 묶음 상한에서 끊으면 1차 시도가 100 건, 2차 시도가 250 건을
-    세어 같은 `event_id` 로 `record_count` 가 다른 요약이 나간다. 다 비우면 재시도는 낼
+    세어 같은 `event_id` 로 `emitted` 가 다른 요약이 나간다. 다 비우면 재시도는 낼
     것이 없어 값이 그대로다. `batch` 는 한 번에 메모리에 들 행 수지 한 회차의 상한이 아니다.
     """
     while True:
@@ -357,7 +358,7 @@ def publish_pending(
             break
         for row in rows:
             # message key 는 `source_id` 다(팀 계약). 같은 소스의 이벤트가 한 파티션에 모여
-            # 순서가 보장되고, 뒤이어 나가는 요약 이벤트가 그 소스의 기사들 뒤에 선다.
+            # 순서가 보장된다. 요약은 별도 토픽이라 두 토픽 사이 순서는 보장하지 않는다.
             publisher.publish(row.source, article_event(row, bucket=bucket, run_id=run_id))
         publisher.flush()
         # 한 묶음을 한 트랜잭션으로 적는다. 행마다 열면 만 건에 만 번이고, 중간에 죽으면
@@ -369,11 +370,10 @@ def publish_pending(
 def publish_summaries(
     *,
     publisher: EventPublisher,
-    bucket: str,
     run_id: str,
     logical_date: datetime,
     statuses: Sequence[SourceStatus],
-    counts: dict[str, int],
+    counts: dict[str, EmittedStats],
 ) -> int:
     """소스별 실행 요약. 0건이어도 낸다(팀 발행 규약 4).
 
@@ -392,8 +392,8 @@ def publish_summaries(
                 run_id=run_id,
                 logical_date=logical_date,
                 status=status.status,
-                record_count=counts.get(status.source, 0),
-                bucket=bucket,
+                outcome=status.outcome,
+                emitted=counts.get(status.source, EmittedStats(0, None)),
                 failure_reason=status.failure_reason,
             ),
         )
