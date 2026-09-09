@@ -150,6 +150,7 @@ def build() -> tuple[dict[str, dict], dict[str, bytes]]:
             failure_reason=FAILURE_REASON,
         ),
     }
+    assert article.raw_key is not None  # 이 fixture는 공개 RSS 기사다.
     objects = {pending.article_key: body, article.raw_key: raw}
     return events, objects
 

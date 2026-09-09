@@ -202,3 +202,61 @@ def test_기사_이벤트의_emitted_run_id_는_발급한_실행이다(article_e
     assert article_evt["emitted_run_id"] == "20260903T100000"
     assert "run_id" not in article_evt
     assert article_evt["article_id"]
+
+
+@pytest.fixture
+def verifier():
+    import importlib.util
+
+    path = CONTRACT.parents[3] / "scripts" / "verify-spark-integration.py"
+    spec = importlib.util.spec_from_file_location("verify_spark_integration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_연동_검증도_새_요약_봉투를_받고_토픽_사이_파티션을_비교하지_않는다(verifier):
+    event = load("run-summary-success.json")
+    verifier.verify_event(event, spark_s3=None, bucket="raw-data", label="요약", summary=True)
+    assert verifier.fail == 0
+    verifier.verify_kafka_placement([
+        (load("article-event.json"), {"topic": "raw-file-ready", "key": "vogue", "partition": 4}),
+        (event, {"topic": "collect-run-summary", "key": "vogue", "partition": 0}),
+    ])
+    assert verifier.fail == 0
+    # 기사 토픽에 요약이 잘못 들어오면 object_key=null로 요약이라고 받아들이면 안 된다.
+    verifier.verify_event(event, spark_s3=None, bucket="raw-data", label="오발급", summary=False)
+    assert verifier.fail > 0
+
+
+@pytest.mark.parametrize("summary_topic", ["", "collect-run-summary"])
+def test_연동_fixture_발행은_요약을_기사_토픽에_섞지_않는다(verifier, monkeypatch, summary_topic):
+    from types import SimpleNamespace
+
+    published = {}
+    monkeypatch.setattr(verifier, "s3_client",
+                        lambda *args: SimpleNamespace(put_object=lambda **kw: None))
+    monkeypatch.setattr(verifier, "publish",
+                        lambda bootstrap, topic, events: published.setdefault(topic, events))
+
+    def consume(bootstrap, topic, **kw):
+        return [(event, {"topic": topic, "key": event["source_id"], "partition": 0})
+                for event in published[topic]]
+
+    monkeypatch.setattr(verifier, "consume", consume)
+    monkeypatch.setattr(verifier, "verify_event", lambda *args, **kw: None)
+    monkeypatch.setattr(verifier, "verify_read_only", lambda *args: None)
+    monkeypatch.setattr(verifier, "cleanup", lambda *args: None)
+    verifier.run_fixture_mode(dict(
+        crawler_key="fake", crawler_secret="fake", spark_key="fake", spark_secret="fake",
+        minio_endpoint="fake", bucket="raw-data", bootstrap="fake",
+        topic="raw-file-ready", summary_topic=summary_topic,
+    ))
+    assert len(published["raw-file-ready"]) == 1
+    assert published["raw-file-ready"][0]["emitted_run_id"]
+    if summary_topic:
+        assert len(published[summary_topic]) == 2
+        assert all("object_key" not in e for e in published[summary_topic])
+    else:
+        assert set(published) == {"raw-file-ready"}
+    assert verifier.fail == 0
