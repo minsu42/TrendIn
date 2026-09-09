@@ -260,3 +260,27 @@ def test_연동_fixture_발행은_요약을_기사_토픽에_섞지_않는다(ve
     else:
         assert set(published) == {"raw-file-ready"}
     assert verifier.fail == 0
+
+
+@pytest.mark.parametrize("field", ["bucket", "collected_at"])
+@pytest.mark.parametrize("value", ["missing", None, ""])
+def test_기사_필수_필드는_객체가_정상이어도_비어_있으면_검증에_실패한다(verifier, field, value):
+    import io
+
+    class FixtureS3:
+        def get_object(self, *, Bucket, Key):
+            assert Bucket == "raw-data"
+            return {"Body": io.BytesIO((OBJECTS / Key).read_bytes())}
+
+    event = load("article-event.json")
+    verifier.verify_event(event, spark_s3=FixtureS3(), bucket="raw-data",
+                          label="정상 기사", summary=False)
+    assert verifier.fail == 0
+
+    if value == "missing":
+        del event[field]
+    else:
+        event[field] = value
+    verifier.verify_event(event, spark_s3=FixtureS3(), bucket="raw-data",
+                          label="필수 필드 누락", summary=False)
+    assert verifier.fail == 1
