@@ -157,7 +157,7 @@ article.json 의 해시. 이벤트·장부에도 같은 값이 있지만, 객체
 것이고 내용이 무엇이었나"를 되짚을 수 있어야 해서 여기에도 둔다.
 
 `run-id` 는 **객체 메타데이터에는** 넣지 않는다. 객체는 한 번 쓰이고 안 바뀌는데 발급은
-나중에, 때로는 다시 일어나기 때문이다. 이벤트의 `emitted_run_id`(#6)는 그것과 다른 값이다 — 거기엔
+나중에, 때로는 다시 일어나기 때문이다. 이벤트의 `run_id`(#6)는 그것과 다른 값이다 — 거기엔
 "이 이벤트를 낸 실행" 이 들어가고, 재발급에 따라 바뀌므로 소비 측 파티션 키로 쓰지 않는다.
 
 값은 ASCII 만 넣는다. 객체 메타데이터는 `x-amz-meta-*` 헤더로 실리고 헤더는 latin-1 이라
@@ -237,14 +237,14 @@ v1 은 장부에 있는 `(source, article_id)` 는 다시 취득하지 않는다
 |---|---|---|
 | 단위 | 저장 확인된 기사 하나 | 소스 하나의 한 회차 (0건·실패 포함) |
 | `event_id` | `{source}-{article_id}`, 결정적인 중복 판정 함수 | `{source}-{run_id}` |
-| 실행 ID | `emitted_run_id`, 발급 실행 | `run_id`, logical date 파생 KST |
+| 실행 ID | `run_id`, 발급 실행 | `run_id`, logical date 파생 KST |
 | 건수 | `record_count=1` | 수집 `stored`와 발급 `emitted`를 분리 |
 | `status` | `success` | `success` 또는 `failed` |
 | MinIO 키 | `object_key`, `raw_object_key` | 해당 필드 없음 |
 
 message key는 둘 다 `source_id`다. 같은 토픽의 같은 소스는 한 파티션에 모이지만,
-**두 토픽 사이 순서는 보장하지 않는다.** 기사 `emitted_run_id`와 요약 `run_id`로 대사한다.
-`event_id`를 파싱해 source를 추출하거나, 재발급에 따라 바뀌는 `emitted_run_id`로
+**두 토픽 사이 순서는 보장하지 않는다.** 기사와 요약의 `run_id`로 대사한다.
+`event_id`를 파싱해 source를 추출하거나, 재발급에 따라 바뀌는 기사 `run_id`로
 파티션을 나누지 않는다. `article.json`과 장부 스키마는 바뀌지 않는다.
 
 수집은 `discovered`, `stored`, `skipped`, `not_modified`, `failed`, `failed_by_stage`,

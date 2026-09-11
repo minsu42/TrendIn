@@ -36,7 +36,7 @@ def article_event(row: PendingArticle, *, bucket: str, run_id: str) -> dict[str,
     `collected_at` 에 요구하는 성질("재처리해도 값이 바뀌지 않는다")을 기사 단위로 옮기면
     이게 된다 — 지난 실행에서 저장만 되고 못 나간 행을 이번에 내도 값이 그대로다.
 
-    `emitted_run_id` 는 발급 실행이다. 수집 실행과 다를 수 있고, 수집 시각은
+    `run_id` 는 발급 실행이다. 수집 실행과 다를 수 있고, 수집 시각은
     `collected_at` 이 든다. 재발급하면 바뀌므로 파티션 키로 쓰지 않는다.
     `event_id` 는 결정적인 중복 판정 함수다. 파싱해서 source 를 추출하지 않는다.
 
@@ -54,7 +54,7 @@ def article_event(row: PendingArticle, *, bucket: str, run_id: str) -> dict[str,
         "domain": row.domain,
         "source_id": row.source,
         "article_id": row.article_id,
-        "emitted_run_id": run_id,
+        "run_id": run_id,
         "url": row.url,
         "title": row.title,
         # 소스가 준 오프셋 그대로. 장부가 `published_at_offset` 을 따로 들고 있는 이유다.

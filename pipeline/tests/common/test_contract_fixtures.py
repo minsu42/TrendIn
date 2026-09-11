@@ -68,7 +68,7 @@ def test_기사_이벤트_fixture_가_봉투_출력과_같다(article_evt):
     """
     rebuilt = article_event(
         _pending_from(article_evt),
-        bucket=article_evt["bucket"], run_id=article_evt["emitted_run_id"]
+        bucket=article_evt["bucket"], run_id=article_evt["run_id"]
     )
     assert rebuilt == article_evt
 
@@ -197,10 +197,9 @@ def test_요약_fixture는_수집보다_많은_이월_발급을_담는다():
     assert evt["emitted_oldest_collected_at"] == "2026-09-01T11:10:00+09:00"
 
 
-def test_기사_이벤트의_emitted_run_id_는_발급한_실행이다(article_evt):
-    """S15P21A102-205: 수집 회차로 오해하지 않도록 발급 실행 이름을 명시한다."""
-    assert article_evt["emitted_run_id"] == "20260903T100000"
-    assert "run_id" not in article_evt
+def test_기사_이벤트의_run_id_는_발급한_실행이다(article_evt):
+    """이름은 소비 측 `EVENT_SCHEMA` 그대로, 뜻은 발급 실행이다 (`02 §2`)."""
+    assert article_evt["run_id"] == "20260903T100000"
     assert article_evt["article_id"]
 
 
@@ -253,7 +252,7 @@ def test_연동_fixture_발행은_요약을_기사_토픽에_섞지_않는다(ve
         topic="raw-file-ready", summary_topic=summary_topic,
     ))
     assert len(published["raw-file-ready"]) == 1
-    assert published["raw-file-ready"][0]["emitted_run_id"]
+    assert published["raw-file-ready"][0]["run_id"]
     if summary_topic:
         assert len(published[summary_topic]) == 2
         assert all("object_key" not in e for e in published[summary_topic])

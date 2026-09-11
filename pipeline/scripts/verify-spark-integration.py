@@ -150,8 +150,7 @@ def verify_article_event(event: dict, *, spark_s3, bucket: str, label: str) -> N
     missing = [f for f in ("bucket", "collected_at") if event.get(f) in (None, "")]
     check(not missing, f"{label} 기사: 필수 필드", f"빈 칸: {missing}" if missing else "")
     # 발급한 실행의 값이다 (data-pipeline-design.md §5 필드 규약). 수집한 실행이 아니다.
-    check(event.get("emitted_run_id") not in (None, ""), f"{label} 기사: emitted_run_id 가 있다")
-    check("run_id" not in event, f"{label} 기사: 옛 run_id 필드가 없다")
+    check(event.get("run_id") not in (None, ""), f"{label} 기사: run_id 가 있다")
     count = event.get("record_count")
     check(count == 1, f"{label} 기사: record_count=1", str(count))
     blank = [f for f in ATTRIBUTION if not event.get(f)]

@@ -135,10 +135,9 @@ def test_실패_사유와_상태를_검증한다(status, reason):
         )
 
 
-def test_기사_이벤트는_emitted_run_id로_발급_실행을_싣는다():
+def test_기사_이벤트의_run_id_는_발급_실행이다():
     event = article_event(pending(), bucket="raw-data", run_id=RUN_ID)
-    assert event["emitted_run_id"] == RUN_ID
-    assert "run_id" not in event
+    assert event["run_id"] == RUN_ID
     assert event["collected_at"] == "2026-09-03T11:10:00+09:00"
     again = article_event(pending(), bucket="raw-data", run_id="20260904T110000")
     assert event["event_id"] == again["event_id"]
@@ -160,10 +159,8 @@ def test_죽은_소스의_수집_결과는_null이고_발급_통계는_보존된
     assert event["emitted_oldest_collected_at"] == "2026-09-01T00:00:00+09:00"
 
 
-def test_기사_봉투는_소비_계약의_필드를_이름_변경만_적용해_채운다():
-    # S15P21A102-206에서 소비 문서의 run_id를 emitted_run_id로 바꿀 때까지의 매핑.
+def test_기사_봉투는_소비_계약의_필드를_다_채운다():
     required = _event_schema_fields()
-    required["emitted_run_id"] = required.pop("run_id", False)
     article = article_event(pending(), bucket="raw-data", run_id=RUN_ID)
     for name, nullable in required.items():
         assert name in article

@@ -443,7 +443,7 @@ def test_기사_이벤트에_그_발급_실행의_run_id_가_박힌다():
         now=NOW,
     )
     _key, event = publisher.sent[0]
-    assert event["emitted_run_id"] == "20260903T110000"
+    assert event["run_id"] == "20260903T110000"
 
 
 def test_재시도해도_요약_건수가_그대로다():
@@ -617,7 +617,7 @@ def test_DAG_발급은_요약_설정과_무관하게_기사를_내고_요약만_
                          ti=SimpleNamespace(xcom_pull=lambda **kw: None))
     assert result["articles"] == 1
     assert result["failed_sources"] == ["vogue"]
-    assert sent[0][0] == "raw-file-ready" and sent[0][1]["emitted_run_id"]
+    assert sent[0][0] == "raw-file-ready" and sent[0][1]["run_id"]
     if summary_topic:
         assert result["summaries"] == 1 and result["summary_enabled"] is True
         assert sent[1][0] == "collect-run-summary"

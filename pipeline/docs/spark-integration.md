@@ -36,7 +36,7 @@ MinIO reader 를 만들 수 있어야 한다.** 크롤러 코드를 열어야 �
 ### message key 를 `source_id` 로 둔 결과
 
 같은 **토픽 안에서** 같은 소스의 이벤트는 한 파티션에 모인다. 기사와 요약은 다른 토픽이므로
-두 토픽 사이의 도착 순서는 보장하지 않는다. 기사 `emitted_run_id` 와 요약 `run_id` 로 대사한다.
+두 토픽 사이의 도착 순서는 보장하지 않는다. 기사와 요약의 `run_id` 로 대사한다(기사 쪽은 발급 실행).
 
 중복 판정은 key 가 아니라 `event_id` 로 한다. 같은 key 로 다른 기사가 계속 오기 때문이다.
 
@@ -65,8 +65,8 @@ MinIO reader 를 만들 수 있어야 한다.** 크롤러 코드를 열어야 �
 
 ### raw-file-ready — 기사 이벤트
 
-기사 하나에 이벤트 하나다. 기사 객체와 장부 스키마는 그대로이며, 봉투의 `run_id` 키만
-`emitted_run_id` 로 바뀌었다. 함수 인자 `run_id` 와 logical date 파생 값 형식은 유지한다.
+기사 하나에 이벤트 하나다. 기사 객체·장부 스키마·봉투 필드 이름은 그대로다. `run_id` 의 뜻은
+소비 계약([`02 §2`](../spark/docs/02-input-contract.md))과 같이 발급 실행이다.
 
 | 필드 | 타입 | 값 |
 |---|---|---|
@@ -78,7 +78,7 @@ MinIO reader 를 만들 수 있어야 한다.** 크롤러 코드를 열어야 �
 | `domain` | string | `fashion` \| `dev` (§11 참고) |
 | `source_id` | string | 소스 키 (`vogue` 등) |
 | `article_id` | string \| null | 소스의 기사 식별자 |
-| `emitted_run_id` | string | 발급 실행, `yyyyMMddTHHmmss` KST. 필수 |
+| `run_id` | string | 발급 실행, `yyyyMMddTHHmmss` KST. 필수 |
 | `url` | string \| null | 기사 정식 URL |
 | `title` | string \| null | 기사 제목 |
 | `published_at` | string \| null | ISO-8601, **소스가 준 오프셋 그대로** |
@@ -92,7 +92,7 @@ MinIO reader 를 만들 수 있어야 한다.** 크롤러 코드를 열어야 �
 | `failure_reason` | string \| null | `null` |
 | `members_only` | bool | 회원 전용 기사면 `true` |
 
-`emitted_run_id` 는 **발급 실행**이다. 저장만 되고 못 나간 행은 다음 회차가 내므로 수집
+`run_id` 는 **발급 실행**이다. 저장만 되고 못 나간 행은 다음 회차가 내므로 수집
 실행과 달라도 정상이다. 수집 시각은 `collected_at` 에 있다. **파티션 키로 쓰지 않는다.**
 재발급하면 값이 달라져 같은 기사가 다른 파티션에 갈릴 수 있다. 값도 파싱하지 않는다.
 `event_id` 는 결정적인 **중복 판정 함수**다. 파싱해서 `source_id` 를 추출하지 않는다.
@@ -379,7 +379,7 @@ cd pipeline
 | 층 | 무엇을 보나 |
 |---|---|
 | Kafka | message key == `source_id` · 토픽별로 같은 소스가 한 파티션에 모이는지 |
-| 봉투 | 공통 필드 · `schema_version` · 토픽별 봉투 · 기사 `emitted_run_id` · `record_count=1` · 출처 명시 · 요약 수집 결과와 발급 통계 |
+| 봉투 | 공통 필드 · `schema_version` · 토픽별 봉투 · 기사 `run_id`(발급 실행) · `record_count=1` · 출처 명시 · 요약 수집 결과와 발급 통계 |
 | MinIO | `object_key` 와 `raw_object_key` 읽기 · `checksum` 대조 · 봉투와 `article.json` 의 값 일치 · raw 가 없으면 `members_only` 인지 |
 | 권한 | **Spark 키 write 거부** |
 
@@ -444,7 +444,6 @@ fixture 를 다시 만들어야 하고, 그러면 fixture diff 가 MR 에 남는
 
 | `02` 의 내용 | 실제 |
 |---|---|
-| `EVENT_SCHEMA` 의 `run_id` | `emitted_run_id` 로 이름 변경, `nullable=False` 유지 |
 | §2 표: `success` + `record_count>0` + `object_key=null` → 계약 위반 DLQ | 이제 기사 토픽에는 맞는 규칙이다. 요약은 별도 토픽으로 읽는다 |
 | §3 `record_count` 를 파싱된 줄 수와 대조 | 객체가 jsonl 이 아니라 단일 JSON 객체다 |
 | §6 manifest 모드가 `metadata.json` 을 훑는다 | `metadata.json` 이 없다. `article.json` 이 완료 마커다 (§5) |
@@ -470,15 +469,15 @@ fixture 를 다시 만들어야 하고, 그러면 fixture diff 가 MR 에 남는
 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`이므로 먼저 토픽이 있어야 한다.
 
 생산 측은 기본 비활성(`TRENDIN_KAFKA_TOPIC_RUN_SUMMARY=`)으로 배포할 수 있다.
-이때 기사 이벤트는 새 `emitted_run_id`로 발급되고, 요약은 발급하지 않으며 로그와
+이때 기사 이벤트는 그대로 발급되고, 요약은 발급하지 않으며 로그와
 publish 결과의 `summaries=0`, `summary_enabled=false`로 표시한다. 토픽 생성 후
 `.env`를 `TRENDIN_KAFKA_TOPIC_RUN_SUMMARY=collect-run-summary`로 채우고
 `docker compose up -d`하면 다음 회차부터 요약을 낸다. 비활성 기간의 요약을 소급 발급하지 않는다.
 
 강민수의 S15P21A102-206에 넘길 변경은 다음과 같다.
 
-- 기사 토픽의 `object_key` 기반 기사/요약 분기를 제거하고 `EVENT_SCHEMA.run_id`를
-  `emitted_run_id`로 바꾼다. 기사 `record_count`는 항상 1이며, 수집 건수는 요약의 `stored` 합이다.
+- 기사 토픽의 `object_key` 기반 기사/요약 분기를 제거한다. 기사 `run_id`는 이름과 뜻(발급 실행)이
+  그대로다. 기사 `record_count`는 항상 1이며, 수집 건수는 요약의 `stored` 합이다.
 - 재계산 창 W는 `처리일 − published_date`를 기준으로 잡는다.
   `처리일 − collected_date`(발급·처리 지연)와 `collected_date − published_date`(수집 지연)를
   함께 고려하며, `emitted_oldest_collected_at`이 오래된 수집분의 늦은 도착을 알려 준다.
