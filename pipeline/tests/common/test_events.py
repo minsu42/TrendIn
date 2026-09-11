@@ -20,13 +20,20 @@ CONTRACT = Path(__file__).resolve().parents[2] / "spark" / "docs" / "02-input-co
 
 
 def _event_schema_fields() -> dict[str, bool]:
-    """소비 계약의 `EVENT_SCHEMA` 선언에서 {필드: nullable} 을 읽는다."""
+    """소비 계약의 `EVENT_SCHEMA` 선언에서 {필드: nullable} 을 읽는다.
+
+    **`_` 로 시작하는 칸은 뺀다.** 그 스키마는 소비 측 리더의 컬럼 목록이라 Spark 가
+    채우는 칸도 들어 있다 — `_corrupt_record` 는 PERMISSIVE 모드가 파싱 실패 원문을
+    담는 자리다(`02 §1`, `spark/io/schema.py` 의 `CORRUPT_FIELD`). 생산자가 채울 값이
+    아니므로 봉투 계약 밖이고, 개별 이름이 아니라 접두어로 걸러 리더 칸이 하나 더 늘어도
+    이 테스트가 생산자를 잘못 고발하지 않게 한다.
+    """
     text = CONTRACT.read_text(encoding="utf-8")
     block = re.search(r"EVENT_SCHEMA = StructType\(\[(.+?)\]\)", text, re.S)
     assert block, f"{CONTRACT} 에서 EVENT_SCHEMA 를 못 찾았다"
     rows = re.findall(r'StructField\("(\w+)",\s*\w+\(\),\s*(True|False)\)', block.group(1))
     assert rows, "EVENT_SCHEMA 안에서 StructField 를 못 찾았다"
-    return {name: flag == "True" for name, flag in rows}
+    return {name: flag == "True" for name, flag in rows if not name.startswith("_")}
 
 
 def pending(**over) -> PendingArticle:
@@ -162,3 +169,23 @@ def test_기사_봉투는_소비_계약의_필드를_이름_변경만_적용해_
         assert name in article
         if not nullable:
             assert article[name] is not None
+
+
+def test_기사_봉투가_소비_측_판별을_그대로_통과한다():
+    """필드 목록 대조보다 이쪽이 계약의 본체다.
+
+    `_event_schema_fields()` 가 보는 `EVENT_SCHEMA` 는 "어떤 칸이 있나" 만 정하고, "어떤
+    칸이 채워져 있어야 하나" 는 `spark/io/contract.py` 가 정한다(`02 §1` 마지막 문단).
+    그래서 생산자 출력을 소비 측 판별기에 그대로 넣어 본다 — 칸이 하나 비면 여기서
+    DLQ 사유가 이름과 함께 나온다.
+
+    요약은 `collect-run-summary` 로 옮겨 이 판별기(`raw-file-ready` 용)의 대상이 아니다.
+
+    `contract.py` 는 stdlib 만 import 하므로 pyspark 없이 이 잡에서 돈다. `schema.py`
+    (pyspark 의존)를 여기서 import 하지 않는 이유이기도 하다.
+    """
+    from trendin.spark.io.contract import EventShape, classify
+
+    article = classify(article_event(pending(), bucket="raw-data", run_id=RUN_ID))
+    assert article.error_type is None, article.detail
+    assert article.shape is EventShape.ARTICLE

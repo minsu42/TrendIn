@@ -9,7 +9,10 @@
 ## 파일 구성
 
 - `compose.yaml`: 공용 Compose 프로젝트, PostgreSQL·Redis 서비스와 각각의 데이터 Volume, 공용 네트워크 정의
+- `../backend/Dockerfile`: Java 25로 애플리케이션을 빌드하고 실행하는 멀티 스테이지 이미지 정의
+- `../backend/.dockerignore`: 백엔드 이미지 빌드에 필요하지 않은 로컬 파일 제외
 - `redis.conf`: Redis의 영속화·메모리 설정. 비밀번호는 이 파일에 두지 않는다.
+- `nginx/trendin.conf`: EC2 호스트 Nginx에서 백엔드로 전달하는 HTTP 리버스 프록시 설정
 - `README.md`: 구성 의도, 검증 방법, 후속 이슈의 작업 범위
 - `.env.example`: 필요한 비밀번호 환경변수의 빈 템플릿
 - 실제 `infra/.env`는 EC2에서만 관리하며 루트 `.gitignore`로 Git 추적에서 제외한다.
@@ -58,7 +61,75 @@ UFW 변경이나 EC2 배포 작업은 이번 범위에 포함하지 않는다.
 - EC2의 `infra/.env` 설정과 접근 제어 확인 후 기동한다.
 - 이번 작업에서는 `.env` 파일을 생성하거나 실제 비밀번호·키를 저장하지 않는다.
 - Redis는 단일 인스턴스다. 복제·Sentinel·Cluster 구성은 포함하지 않는다.
-- 백엔드 애플리케이션의 Redis 의존성 추가와 접속 설정은 이번 범위가 아니다.
+- 백엔드의 기존 Redis 의존성과 프로필별 접속 설정은 유지하고 Compose에서 환경변수만 주입한다.
+
+## 백엔드 컨테이너
+
+백엔드는 Java 25 빌드·런타임 이미지를 분리한 멀티 스테이지 Dockerfile로 빌드한다.
+컨테이너는 일반 사용자 `spring`으로 실행하고 `dev` 프로필을 사용한다.
+`application-dev.yml`의 `ddl-auto`는 `validate`이므로 기동 시 공용 DB를 생성하거나 변경하지 않고,
+사전에 적용한 baseline과 Entity가 일치하는지만 검사한다.
+
+Compose의 백엔드 서비스는 공용 네트워크에서 `postgres:5432`, `redis:6379`로 접근한다.
+DB·Redis 비밀번호와 JWT Secret은 이미지에 포함하지 않고 EC2의 `infra/.env`에서 주입한다.
+Nginx 적용 전까지 애플리케이션 포트도 호스트의 `127.0.0.1`에만 연결한다.
+
+EC2에서 기존 `infra/.env`에 `.env.example`의 Backend 항목을 추가하고 실제 Secret과 허용할
+프런트엔드 Origin을 입력한 뒤 저장소 루트에서 실행한다.
+`DEV_JWT_SECRET`은 HS256 서명에 사용할 임의의 값으로 설정하며 UTF-8 기준 최소 32바이트여야 한다.
+
+```sh
+docker compose --env-file infra/.env -f infra/compose.yaml config --quiet
+docker compose --env-file infra/.env -f infra/compose.yaml build backend
+docker compose --env-file infra/.env -f infra/compose.yaml up -d backend
+docker compose --env-file infra/.env -f infra/compose.yaml ps
+docker compose --env-file infra/.env -f infra/compose.yaml logs --tail=100 backend
+```
+
+EC2 내부에서는 `curl http://127.0.0.1:8080`으로 연결을 확인한다. 외부 PC에서 임시로 확인할 때는
+5432와 마찬가지로 SSH 터널 `-L 18080:127.0.0.1:8080`을 사용하며 8080을 공인망에 열지 않는다.
+
+## Nginx 리버스 프록시
+
+호스트 Nginx가 `j15a102.p.ssafy.io`의 80 포트 요청을 받고, 루프백에만 공개된 백엔드
+`127.0.0.1:8080`으로 전달한다. 클라이언트의 Host, IP, 전달 경로의 프로토콜은 표준 proxy header로
+백엔드에 전달한다. HTTPS와 인증서 설정은 이번 구성에 포함하지 않는다.
+
+EC2에서 백엔드가 정상 실행 중인지 먼저 확인한 뒤 저장소 루트에서 다음 명령을 실행한다.
+
+```sh
+curl --silent --show-error --output /dev/null --write-out 'HTTP %{http_code}\n' http://127.0.0.1:8080/
+
+sudo apt-get update
+sudo apt-get install -y nginx
+sudo install -o root -g root -m 644 infra/nginx/trendin.conf /etc/nginx/sites-available/trendin
+sudo ln -sfn /etc/nginx/sites-available/trendin /etc/nginx/sites-enabled/trendin
+sudo nginx -t
+sudo systemctl enable --now nginx
+sudo systemctl reload nginx
+```
+
+UFW는 비활성화하지 않는다. SSH 허용 규칙과 현재 접속을 먼저 확인하고 HTTP만 추가한다.
+AWS 보안 그룹도 외부 HTTP 접속이 필요하면 TCP 80만 허용하며, 8080은 열지 않는다.
+
+```sh
+sudo ufw status verbose
+sudo ufw allow 'Nginx HTTP'
+sudo ufw status verbose
+```
+
+EC2에서는 Host 헤더를 포함해 프록시 응답을 확인하고, 외부에서는 공인 도메인으로 확인한다.
+애플리케이션에 `/` 엔드포인트가 없어 404가 반환되더라도 Nginx 응답과 백엔드 로그를 함께 확인한다.
+
+```sh
+curl -i -H 'Host: j15a102.p.ssafy.io' http://127.0.0.1/
+curl -i http://j15a102.p.ssafy.io/
+sudo journalctl -u nginx --since '10 minutes ago' --no-pager
+docker compose --env-file infra/.env -f infra/compose.yaml logs --tail=100 backend
+```
+
+설정 변경 시에는 항상 `sudo nginx -t`를 먼저 통과시킨 뒤 reload한다. 기존 Nginx 설정이나 다른
+가상 호스트가 있다면 `sites-enabled`의 80 포트 및 같은 `server_name` 충돌 여부를 먼저 확인한다.
 
 ## EC2에서 준비 및 실행
 
@@ -73,7 +144,8 @@ nano infra/.env
 ```
 
 편집기에서 `POSTGRES_PASSWORD`와 `REDIS_PASSWORD`에 합의한 실제 비밀번호를 입력한다.
-이미 `.env`를 사용 중이라면 `REDIS_PASSWORD` 줄만 추가한다.
+이미 `.env`를 사용 중이라면 기존 값을 유지하면서 `.env.example`의 `BACKEND_*`, `DEV_*` 항목을
+모두 추가하고 환경에 맞게 설정한다. 빈 필수 변수가 하나라도 있으면 Compose 설정 해석이 중단된다.
 셸에 같은 이름의 환경변수가 있으면 파일보다 우선하므로, 의도치 않은 값이 설정되어 있지 않은지 확인한다.
 실제 비밀번호는 문서·커밋·명령 기록에 남기지 않는다.
 `.env`는 암호화 저장소가 아니며 Docker 관리 권한이 있는 사용자는 컨테이너 환경변수를 볼 수 있다.

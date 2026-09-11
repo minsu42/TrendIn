@@ -1,0 +1,171 @@
+# TrendIn 데이터 CI/CD
+# MR에서 datastore/·pipeline/을 검증하고, dev 머지 시 데이터 EC2에 배포한다.
+# 컨테이너 기반 검증은 배포 잡에서 수행한다. (S15P21A102-182, S15P21A102-183)
+
+stages:
+  - verify
+  - deploy
+
+# 관련 파일을 변경한 MR과 dev 파이프라인만 생성한다. dev도 경로로 거른다.
+#
+# dev를 경로로 거르지 않으면 backend만 고친 머지도 dev 파이프라인을 만든다. 그 파이프라인이
+# 앞서 돌던 데이터 파이프라인을 밀어내는데, 배포 잡은 dev의 data 변경에만 생기므로 취소된
+# 배포를 아무도 대신하지 않는다. 머지한 사람은 canceled 표시만 보고 올라갔다고 믿는다.
+#
+# dev 목록에만 배포 스크립트가 있다. 그것만 고친 머지에서 파이프라인이 안 생기면 배포가
+# 도달하지 못한다. MR 목록에 없는 이유는 그 경로를 보는 잡이 MR에서 돌지 않기 때문이다.
+workflow:
+  # dev 파이프라인끼리도 서로 취소하지 않는다. 취소되는 시점의 deploy는 아직 시작하지 않은
+  # 잡이라 interruptible: false 로 보호되지 않고, 앞 커밋이 배포됐는지가 이력에 남지 않는다.
+  # 데이터 머지 N번이면 배포도 N번 돈다. 직렬화는 deploy 잡의 resource_group이 맡는다.
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - datastore/**/*
+        - pipeline/**/*
+        - scripts/check-destructive-settings.sh
+        - .gitlab-ci.yml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - datastore/**/*
+        - pipeline/**/*
+        - scripts/check-destructive-settings.sh
+        - scripts/deploy-data-ec2.sh
+        - .gitlab-ci.yml
+    - when: never
+
+default:
+  interruptible: true
+
+# MR에서는 해당 영역 변경 시, dev에서는 항상 실행한다.
+.datastore-rules:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - datastore/**/*
+        - .gitlab-ci.yml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.pipeline-rules:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - pipeline/**/*
+        - .gitlab-ci.yml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Docker 데몬 없이 compose 구문만 검증한다.
+# `${VAR:?}` 변수는 compose.yaml에서 찾아 더미 값으로 채운다.
+# `:?`는 빈 값도 거부해서 .env.example은 쓸 수 없다.
+datastore:compose:
+  stage: verify
+  extends: .datastore-rules
+  image: docker:28-cli
+  script:
+    - cd datastore
+    - |
+      for name in $(grep -o '\${[A-Z_][A-Z_0-9]*:?' compose.yaml | sed 's/^\${//; s/:?$//' | sort -u); do
+        export "$name=ci-dummy"
+      done
+      docker compose -f compose.yaml config --quiet
+
+# 배포되면 되돌릴 수 없는 설정 다섯 개를 target 브랜치와 비교한다.
+# dev에서는 비교 대상이 자기 자신이라 MR에서만 돈다.
+datastore:guard:
+  stage: verify
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - datastore/compose.yaml
+        - scripts/check-destructive-settings.sh
+  # 값을 정규식이 아니라 `docker compose config` 가 푼 결과에서 읽는다. 데몬은 필요 없다.
+  image: docker:28-cli
+  variables:
+    # Allow-destructive 를 target 브랜치까지 거슬러 읽어야 한다.
+    GIT_DEPTH: "0"
+  before_script:
+    - apk add --no-cache git jq >/dev/null
+  script:
+    - scripts/check-destructive-settings.sh
+
+# Airflow 이미지에서 수집 계층의 린트와 테스트를 실행한다.
+pipeline:verify:
+  stage: verify
+  extends: .pipeline-rules
+  image:
+    name: apache/airflow:3.3.1-python3.12
+    entrypoint: [""]
+  variables:
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    # 한글 테스트 이름을 UTF-8로 출력한다.
+    PYTHONIOENCODING: "utf-8"
+    # 설치 대신 소스 경로를 추가한다. `-e .`는 uid 50000으로 도는 이 이미지에서 권한에 막힌다.
+    PYTHONPATH: "$CI_PROJECT_DIR/pipeline/src"
+  script:
+    - cd pipeline
+    # pyproject.toml에 고정된 ruff 버전을 사용한다. 안 고정하면 새 릴리스의 규칙에 린트가 깨진다.
+    - RUFF_SPEC=$(sed -n 's/.*"\(ruff[^"]*\)".*/\1/p' pyproject.toml | head -1)
+    # 따옴표로 감싸 YAML의 `: ` 오해석을 막는다.
+    - 'echo "ruff spec: ${RUFF_SPEC}"'
+    - pip install --no-cache-dir pytest "${RUFF_SPEC}"
+    - ruff check .
+    # Spark 테스트는 별도 잡에서 맡는다. DAG import 검사는 여기 들어 있다.
+    - pytest tests
+
+# Spark 세션이 필요한 테스트를 실행한다. 외부 서비스와 jar는 사용하지 않는다.
+pipeline:verify-spark:
+  stage: verify
+  extends: .pipeline-rules
+  image: python:3.12-slim-bookworm
+  variables:
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PYTHONIOENCODING: "utf-8"
+    PYTHONPATH: "$CI_PROJECT_DIR/pipeline/src"
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
+  cache:
+    # Spark 버전이 바뀔 때만 큰 의존성을 다시 받는다.
+    key:
+      files:
+        - pipeline/spark/versions.sh
+    paths:
+      - .pip-cache
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends openjdk-17-jre-headless
+    - cd pipeline
+    # Spark 버전은 versions.sh에서 관리한다.
+    - . spark/versions.sh
+    - echo "pyspark ${SPARK_VERSION}"
+    # 전체 프로젝트 대신 Spark 테스트에 필요한 의존성만 설치한다.
+    # 이 줄은 사본이다 — spark/tests에 새 import를 넣으면 여기도 고친다. pyyaml은 pyproject.toml에 없다.
+    - pip install pytest pyyaml boto3 kiwipiepy "pyspark==${SPARK_VERSION}"
+  script:
+    - pytest spark/tests
+
+# 데이터 EC2(J15A102A)에 Kafka·MinIO·Airflow·Spark를 배포한다.
+# 러너와 서버 설정: docs/deploy-data-ec2.md (S15P21A102-183)
+deploy:data-ec2:
+  stage: deploy
+  # 호스트 Docker에 접근할 수 있는 shell 러너를 사용한다. 태그를 빼면 docker 러너가 집어가 배포가 안 된다.
+  tags:
+    - data-ec2
+  # dev에서 배포 대상이 변경된 경우에만 실행한다.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - datastore/**/*
+        - pipeline/**/*
+        - scripts/deploy-data-ec2.sh
+        - .gitlab-ci.yml
+  # 배포를 직렬화한다.
+  resource_group: data-ec2
+  # 취소로 이미지와 컨테이너 버전이 어긋나지 않게 한다.
+  interruptible: false
+  environment:
+    name: data-ec2
+  variables:
+    # 배포에는 최신 이력만 필요하다.
+    GIT_DEPTH: "1"
+  script:
+    - scripts/deploy-data-ec2.sh

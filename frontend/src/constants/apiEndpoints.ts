@@ -5,6 +5,21 @@
 const TODO_ENDPOINT = undefined;
 
 export const API_ENDPOINTS = {
+  // 인증 API는 계약이 확정되어 경로를 그대로 적습니다.
+  auth: {
+    signUp: '/auth/signup',
+    login: '/auth/login',
+    logout: '/auth/logout',
+    reissue: '/auth/reissue',
+    emailCheck: '/auth/email-check',
+    oauthLogin: (provider: string) => `/auth/oauth/${encodeURIComponent(provider)}/login`,
+  },
+  // 고를 수 있는 관심 분야 목록. 로그인 전에도 볼 수 있습니다.
+  domains: '/domains',
+  members: {
+    me: '/members/me',
+    domains: '/members/me/domains',
+  },
   trends: {
     top: TODO_ENDPOINT,
     new: TODO_ENDPOINT,
@@ -19,6 +34,11 @@ export const API_ENDPOINTS = {
     list: TODO_ENDPOINT,
     save: TODO_ENDPOINT,
     delete: TODO_ENDPOINT,
+  },
+  // 등록한 관심 키워드 자체는 저장 보드처럼 기기에만 두므로 endpoint가 없습니다.
+  myPage: {
+    profile: TODO_ENDPOINT,
+    keywordCatalog: TODO_ENDPOINT,
   },
 } as const;
 
