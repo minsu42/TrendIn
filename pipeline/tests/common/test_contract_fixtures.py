@@ -158,7 +158,9 @@ def test_article_json_이_그_자체로_유효한_JSON_이다(article_evt):
         assert doc[field]
 
 
-@pytest.mark.parametrize("name", ["run-summary-success.json", "run-summary-failed.json"])
+@pytest.mark.parametrize(
+    "name", ["collect-run-summary-success.json", "collect-run-summary-failed.json"]
+)
 def test_요약_이벤트_fixture_가_봉투_출력과_같다(name):
     from datetime import datetime
 
@@ -188,7 +190,7 @@ def test_요약_이벤트_fixture_가_봉투_출력과_같다(name):
 
 
 def test_요약_fixture는_수집보다_많은_이월_발급을_담는다():
-    evt = load("run-summary-success.json")
+    evt = load("collect-run-summary-success.json")
     assert "object_key" not in evt and "record_count" not in evt
     assert evt["stored"] == 1
     assert evt["emitted"] == 12
@@ -215,7 +217,7 @@ def verifier():
 
 
 def test_연동_검증도_새_요약_봉투를_받고_토픽_사이_파티션을_비교하지_않는다(verifier):
-    event = load("run-summary-success.json")
+    event = load("collect-run-summary-success.json")
     verifier.verify_event(event, spark_s3=None, bucket="raw-data", label="요약", summary=True)
     assert verifier.fail == 0
     verifier.verify_kafka_placement([

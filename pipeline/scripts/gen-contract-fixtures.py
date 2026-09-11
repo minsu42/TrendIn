@@ -16,6 +16,10 @@ cd pipeline
 
 샘플 값은 `tests/common/test_events.py` 의 `pending()` 과 같게 둔다. 두 곳이 갈리면 같은
 계약을 두 모양으로 설명하는 셈이 된다.
+
+같은 폴더의 `run-summary-*.json` 은 이 스크립트가 만들지 않는다. 토픽 분리 전에
+`raw-file-ready` 로 나간 이전 봉투 요약이고, 보존 기간 동안 소비 측이 계속 판별하므로
+그대로 둔다. 기사 토픽의 요약 분기를 걷을 때(S15P21A102-206) 함께 지운다.
 """
 
 from __future__ import annotations
@@ -122,7 +126,7 @@ def build() -> tuple[dict[str, dict], dict[str, bytes]]:
 
     events = {
         "article-event.json": article_event(pending, bucket=BUCKET, run_id=RUN_ID),
-        "run-summary-success.json": run_summary_event(
+        "collect-run-summary-success.json": run_summary_event(
             source=SOURCE,
             domain=DOMAIN,
             run_id=RUN_ID,
@@ -139,7 +143,7 @@ def build() -> tuple[dict[str, dict], dict[str, bytes]]:
             ),
             emitted=EmittedStats(SUMMARY_EMITTED, COLLECTED_AT - timedelta(days=2)),
         ),
-        "run-summary-failed.json": run_summary_event(
+        "collect-run-summary-failed.json": run_summary_event(
             source=FAILED_SOURCE,
             domain=DOMAIN,
             run_id=RUN_ID,

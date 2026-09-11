@@ -324,14 +324,15 @@ docker run --rm --network s15p21a102-data \
 
 ## 8. 샘플
 
-[`spark/tests/fixtures/contract/`](../spark/tests/fixtures/contract/) 에 이벤트 3건과 그 이벤트가
-가리키는 객체 2개가 있다. Kafka·MinIO 를 띄우지 않고 파싱·검증 코드를 테스트할 수 있다.
+[`spark/tests/fixtures/contract/`](../spark/tests/fixtures/contract/) 에 이벤트 5건(기사 1, 요약 토픽 2, 이전 봉투 요약 2)과
+기사 이벤트가 가리키는 객체 2개가 있다. Kafka·MinIO 를 띄우지 않고 파싱·검증 코드를 테스트할 수 있다.
 
 | 파일 | 무엇 |
 |---|---|
-| `article-event.json` | 기사 이벤트. `object_key` 가 있다 |
-| `run-summary-success.json` | 실행 요약(성공). `stored=1`, `emitted=12`, 취득 실패 2건과 발급 지연 표본 |
-| `run-summary-failed.json` | 실행 요약(실패). 수집 결과 9칸은 `null`, `emitted=0`, `failure_reason` 이 있다 |
+| `article-event.json` | 기사 이벤트(`raw-file-ready`). `object_key` 가 있다 |
+| `collect-run-summary-success.json` | 요약 토픽의 실행 요약(성공). `stored=1`, `emitted=12`, 취득 실패 2건과 발급 지연 표본 |
+| `collect-run-summary-failed.json` | 요약 토픽의 실행 요약(실패). 수집 결과 9칸은 `null`, `emitted=0`, `failure_reason` 이 있다 |
+| `run-summary-success.json` · `run-summary-failed.json` | 이전 봉투 요약. 분리 전 `raw-file-ready` 에 나간 요약(7일 보존)을 소비 측이 계속 판별하도록 남긴다. 생성 스크립트가 만들지 않고, S15P21A102-206 이 기사 토픽의 요약 분기를 걷을 때 함께 지운다 |
 | `objects/fashion/vogue/rss/2026/09/03/854414/article.json` | 위 기사 이벤트의 `object_key` 가 가리키는 실물 |
 | `objects/fashion/vogue/rss/2026/09/03/854414/raw.xml` | `raw_object_key` 가 가리키는 실물 |
 

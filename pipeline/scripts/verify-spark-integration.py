@@ -354,7 +354,12 @@ def load_fixtures() -> tuple[list[dict], dict[str, bytes]]:
     나머지 칸은 손대지 않으므로 `checksum` 은 그대로 유효하다.
     """
     events, objects = [], {}
-    for name in ("article-event.json", "run-summary-success.json", "run-summary-failed.json"):
+    names = (
+        "article-event.json",
+        "collect-run-summary-success.json",
+        "collect-run-summary-failed.json",
+    )
+    for name in names:
         event = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
         event["event_id"] = f"{VERIFY_PREFIX}-{event['event_id']}"
         for field in ("object_key", "raw_object_key"):
