@@ -335,6 +335,22 @@ def test_수집_결과는_단계별_실패와_저장_숫자를_XCom_왕복에도
     assert SourceOutcome.from_dict(payload) == outcome
 
 
+def test_모르는_실패_단계도_세고_수집을_멈추지_않는다():
+    """`Stage` 는 타입 힌트일 뿐이라 새 어댑터가 다른 이름을 내도 런타임엔 막히지 않는다."""
+    from dataclasses import replace
+
+    class OddStage(FakeAdapter):
+        def discover(self, page=None) -> DiscoverResult:
+            result = super().discover(page)
+            odd = Failure(source=SOURCE.key, stage="parse", ref="x", reason="새 단계")  # type: ignore[arg-type]
+            return replace(result, failures=[*result.failures, odd])
+
+    outcome = collect_source(OddStage(["1"]), ledger=InMemoryLedger(), store=InMemoryObjectStore())
+    assert outcome.stored == 1
+    assert outcome.failed == 2
+    assert outcome.failed_by_stage == {"discover": 1, "materialize": 0, "store": 0, "parse": 1}
+
+
 # --- 객체 메타데이터와 키 규칙 (S15P21A102-158) -----------------------------
 
 

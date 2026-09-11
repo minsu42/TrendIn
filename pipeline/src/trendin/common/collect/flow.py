@@ -19,10 +19,10 @@ import logging
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Sequence, get_args
 
 from trendin.common.collect.article import Article
-from trendin.common.collect.contracts import Candidate, Failure, SourceAdapter
+from trendin.common.collect.contracts import Candidate, Failure, SourceAdapter, Stage
 from trendin.common.collect.events import article_event, run_summary_event
 from trendin.common.collect.keys import ROUTE_EXT, article_key, raw_key
 from trendin.common.collect.ledger import EmittedStats, Ledger
@@ -60,7 +60,7 @@ FAILURE_REASON_MAX = 200
 class FailureBrief:
     """요약에 싣는 실패 표본. 사유는 200자까지만 보존한다."""
 
-    stage: str  # "discover" | "materialize" | "store"
+    stage: Stage
     article_id: str
     reason: str
 
@@ -236,9 +236,11 @@ def collect_source(adapter: SourceAdapter, *, ledger: Ledger, store: ObjectStore
         logger.warning("%s: 발견 실패 %s — %s", source.key, failure.ref, failure.reason)
 
     all_failures = [*result.failures, *failures]
-    failed_by_stage = {"discover": 0, "materialize": 0, "store": 0}
+    # 세 단계는 0 이어도 싣는다. 모르는 단계는 키를 늘려 센다 — 저장을 마친 뒤라 여기서
+    # 죽으면 태스크만 실패하고 수집 결과(XCom)가 날아간다.
+    failed_by_stage: dict[str, int] = dict.fromkeys(get_args(Stage), 0)
     for failure in all_failures:
-        failed_by_stage[failure.stage] += 1
+        failed_by_stage[failure.stage] = failed_by_stage.get(failure.stage, 0) + 1
 
     return SourceOutcome(
         source=source.key,
